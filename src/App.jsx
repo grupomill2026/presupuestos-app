@@ -16,9 +16,9 @@ const FIREBASE_CONFIG = {
 };
 
 const EMAILJS_CONFIG = {
-  serviceId: "TU_SERVICE_ID",
-  templateId: "TU_TEMPLATE_ID",
-  publicKey: "TU_PUBLIC_KEY",
+  serviceId: "service_qmv5crs",
+  templateId: "template_ip58pzu",
+  publicKey: "QT7vwRMj03dDhnZAj",
 };
 
 // ============================================================
@@ -65,6 +65,92 @@ const useDemoMode = FIREBASE_CONFIG.apiKey === "TU_API_KEY";
 const firebaseApp = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(firebaseApp);
 const firestore = getFirestore(firebaseApp);
+
+// Email notification system
+const TEAM_EMAILS = {
+  "Gerente General": "fafrontoni@grupomill.com",
+  "Líder CIL": "mbprieto@grupomill.com",
+  "Líder Consultoría": "ellanarivera@grupomill.com",
+  "Líder Agro": "abueno@grupomill.com",
+  "Líder Marketing": "megreco@grupomill.com",
+  "Gerente de Servicios": "abueno@grupomill.com",
+  "Administración": "administracion@grupomill.com",
+};
+
+async function sendEmailNotification({ toEmail, toName, subject, heading, message, clientName, status, area }) {
+  if (!EMAILJS_CONFIG.serviceId || EMAILJS_CONFIG.serviceId === "TU_SERVICE_ID") return;
+  try {
+    const response = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service_id: EMAILJS_CONFIG.serviceId,
+        template_id: EMAILJS_CONFIG.templateId,
+        user_id: EMAILJS_CONFIG.publicKey,
+        template_params: {
+          to_email: toEmail,
+          to_name: toName || toEmail.split("@")[0],
+          subject: subject,
+          heading: heading || subject,
+          message: message,
+          client_name: clientName || "",
+          status: status || "",
+          area: area || "",
+        },
+      }),
+    });
+    console.log("Email enviado a", toEmail, response.ok ? "OK" : "Error");
+  } catch (err) {
+    console.error("Error enviando email:", err);
+  }
+}
+
+function getNotificationTargets(newState, budget) {
+  switch (newState) {
+    case "solicitado":
+      return [
+        { role: "Gerente General", msg: "Se creó una nueva solicitud de presupuesto" },
+        { role: "Administración", msg: "Se creó una nueva solicitud de presupuesto" },
+      ];
+    case "enviado":
+      return [
+        { email: TEAM_EMAILS[`Líder ${budget.area}`] || "", role: `Líder ${budget.area}`, msg: "El presupuesto fue enviado al cliente" },
+      ];
+    case "aceptado":
+      return [
+        { role: "Administración", msg: "El cliente aceptó el presupuesto. Gestionar cobro de seña." },
+      ];
+    case "sena_cobrada":
+      return [
+        { role: "Gerente de Servicios", msg: "La seña fue cobrada. Podés iniciar el trabajo." },
+      ];
+    case "finalizado":
+      return [
+        { role: "Administración", msg: "El trabajo fue finalizado. Gestionar facturación y cobro final." },
+      ];
+    default:
+      return [];
+  }
+}
+
+async function notifyByEmail(newState, budget) {
+  const targets = getNotificationTargets(newState, budget);
+  const estadoLabel = ESTADO_MAP[newState]?.label || newState;
+  for (const t of targets) {
+    const email = t.email || TEAM_EMAILS[t.role] || "";
+    if (!email) continue;
+    await sendEmailNotification({
+      toEmail: email,
+      toName: t.role,
+      subject: `${budget.cliente} → ${estadoLabel}`,
+      heading: `Presupuesto ${estadoLabel}`,
+      message: t.msg,
+      clientName: budget.cliente,
+      status: estadoLabel,
+      area: budget.area,
+    });
+  }
+}
 
 const DEMO_USERS = [
   { uid: "u1", email: "lider.cil@empresa.com", displayName: "María López", role: "Líder CIL" },
@@ -783,6 +869,7 @@ export default function App() {
       });
       setShowNewForm(false);
       addNotification(`Nuevo presupuesto para ${data.cliente}`, docRef.id);
+      notifyByEmail("solicitado", { cliente: data.cliente, area: data.area });
     } catch (err) {
       console.error("Error creando presupuesto:", err);
       alert("Error al crear el presupuesto. Intentá de nuevo.");
@@ -822,6 +909,7 @@ export default function App() {
     }
     const label = ESTADO_MAP[newState]?.label;
     addNotification(`${budgetId} → ${label}: ${budget.cliente}`, budgetId);
+    notifyByEmail(newState, budget);
   };
 
   // Filter
