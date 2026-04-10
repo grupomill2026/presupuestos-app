@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
-import { getFirestore, doc, getDoc } from "firebase/firestore";
+import { getFirestore, doc, getDoc, collection, addDoc, updateDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp } from "firebase/firestore";
 
 // ============================================================
 // CONFIGURACIÓN - Reemplazar con tus credenciales
@@ -694,12 +694,32 @@ export default function App() {
   const [filterArea, setFilterArea] = useState("Todas");
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Init demo data
+  // Init data - Firestore real-time or demo
   useEffect(() => {
     if (useDemoMode) {
-      const saved = null; // In real app, would use Firestore
       setPresupuestos(createDemoData());
+      return;
     }
+    // Real-time Firestore listener
+    const q = query(collection(firestore, "presupuestos"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map((d) => {
+        const raw = d.data();
+        return {
+          ...raw,
+          id: d.id,
+          createdAt: raw.createdAt?.toDate?.()?.toISOString() || raw.createdAt,
+          updatedAt: raw.updatedAt?.toDate?.()?.toISOString() || raw.updatedAt,
+          validez: raw.validez?.toDate?.()?.toISOString() || raw.validez,
+        };
+      });
+      setPresupuestos(data);
+    }, (err) => {
+      console.error("Firestore error:", err);
+      // Fallback to demo if Firestore fails
+      setPresupuestos(createDemoData());
+    });
+    return () => unsubscribe();
   }, []);
 
   // Check stale budgets
@@ -735,63 +755,73 @@ export default function App() {
   };
 
   // Create budget
-  const handleCreate = (data) => {
-    const newBudget = {
-      ...data,
-      id: generateId(),
-      estado: "solicitado",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      createdBy: user.uid,
-      solicitante: user.uid,
-      historial: [
-        {
-          fecha: new Date().toISOString(),
-          usuario: user.displayName,
-          accion: "Creó la solicitud",
-          estadoAnterior: null,
-          estadoNuevo: "solicitado",
-        },
-      ],
-      archivos: [],
-    };
-    setPresupuestos((prev) => [newBudget, ...prev]);
-    setShowNewForm(false);
-    addNotification(`Nuevo presupuesto ${newBudget.id} para ${newBudget.cliente}`, newBudget.id);
+  const handleCreate = async (data) => {
+    if (useDemoMode) {
+      const newBudget = {
+        ...data, id: generateId(), estado: "solicitado",
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        createdBy: user.uid, solicitante: user.uid,
+        historial: [{ fecha: new Date().toISOString(), usuario: user.displayName, accion: "Creó la solicitud", estadoAnterior: null, estadoNuevo: "solicitado" }],
+        archivos: [],
+      };
+      setPresupuestos((prev) => [newBudget, ...prev]);
+      setShowNewForm(false);
+      addNotification(`Nuevo presupuesto ${newBudget.id} para ${newBudget.cliente}`, newBudget.id);
+      return;
+    }
+    try {
+      const docRef = await addDoc(collection(firestore, "presupuestos"), {
+        ...data,
+        estado: "solicitado",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: user.uid,
+        solicitante: user.uid,
+        solicitanteNombre: user.displayName,
+        historial: [{ fecha: new Date().toISOString(), usuario: user.displayName, accion: "Creó la solicitud", estadoAnterior: null, estadoNuevo: "solicitado" }],
+        archivos: [],
+      });
+      setShowNewForm(false);
+      addNotification(`Nuevo presupuesto para ${data.cliente}`, docRef.id);
+    } catch (err) {
+      console.error("Error creando presupuesto:", err);
+      alert("Error al crear el presupuesto. Intentá de nuevo.");
+    }
   };
 
   // Change state
-  const handleChangeState = (budgetId, newState, comment) => {
-    setPresupuestos((prev) =>
-      prev.map((p) => {
-        if (p.id !== budgetId) return p;
-        const estadoAnterior = p.estado;
-        const entry = {
-          fecha: new Date().toISOString(),
-          usuario: user.displayName,
-          accion: comment || `Cambió estado a ${ESTADO_MAP[newState]?.label}`,
-          estadoAnterior,
-          estadoNuevo: newState,
-        };
-        const updated = {
-          ...p,
+  const handleChangeState = async (budgetId, newState, comment) => {
+    const budget = presupuestos.find((p) => p.id === budgetId);
+    if (!budget) return;
+    const entry = {
+      fecha: new Date().toISOString(),
+      usuario: user.displayName,
+      accion: comment || `Cambió estado a ${ESTADO_MAP[newState]?.label}`,
+      estadoAnterior: budget.estado,
+      estadoNuevo: newState,
+    };
+    if (useDemoMode) {
+      setPresupuestos((prev) =>
+        prev.map((p) => {
+          if (p.id !== budgetId) return p;
+          return { ...p, estado: newState, updatedAt: new Date().toISOString(), historial: [...p.historial, entry] };
+        })
+      );
+    } else {
+      try {
+        await updateDoc(doc(firestore, "presupuestos", budgetId), {
           estado: newState,
-          updatedAt: new Date().toISOString(),
-          historial: [...p.historial, entry],
-        };
-        // Notifications
-        const label = ESTADO_MAP[newState]?.label;
-        addNotification(`${p.id} → ${label}: ${p.cliente}`, p.id);
-        return updated;
-      })
-    );
-    setSelectedBudget((prev) => {
-      if (prev && prev.id === budgetId) {
-        const updated = presupuestos.find((p) => p.id === budgetId);
-        if (updated) return { ...updated, estado: newState };
+          updatedAt: serverTimestamp(),
+          historial: [...(budget.historial || []), entry],
+        });
+      } catch (err) {
+        console.error("Error actualizando estado:", err);
+        alert("Error al cambiar el estado. Intentá de nuevo.");
+        return;
       }
-      return prev;
-    });
+    }
+    const label = ESTADO_MAP[newState]?.label;
+    addNotification(`${budgetId} → ${label}: ${budget.cliente}`, budgetId);
   };
 
   // Filter
@@ -831,6 +861,33 @@ export default function App() {
     if (s === "en_ejecucion" && isLider && liderArea === budget.area)
       actions.push({ state: "finalizado", label: "Marcar finalizado", color: "btn-success" });
     return actions;
+  };
+
+  // Export to CSV/Excel
+  const handleExportExcel = () => {
+    const headers = ["ID", "Cliente", "Área", "Descripción", "Estado", "Monto", "Fecha Creación", "Última Actualización", "Validez", "Solicitante", "Ítems"];
+    const rows = presupuestos.map((p) => [
+      p.id,
+      `"${(p.cliente || "").replace(/"/g, '""')}"`,
+      p.area,
+      `"${(p.descripcion || "").replace(/"/g, '""')}"`,
+      ESTADO_MAP[p.estado]?.label || p.estado,
+      p.monto || 0,
+      formatDateTime(p.createdAt),
+      formatDateTime(p.updatedAt),
+      formatDate(p.validez),
+      p.solicitanteNombre || p.solicitante || "",
+      `"${(p.items || []).map((it) => it.desc + ": $" + it.monto).join("; ")}"`,
+    ]);
+    const BOM = "\uFEFF";
+    const csv = BOM + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `presupuestos_backup_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -899,6 +956,9 @@ export default function App() {
                   ⚠️ {staleAlerts.length} sin movimiento
                 </span>
               )}
+              <button className="btn btn-sm btn-secondary" onClick={handleExportExcel} title="Descargar backup Excel">
+                📥 Backup
+              </button>
               <div className="bell-wrapper">
                 <button className="btn-ghost" onClick={() => setShowNotif(true)}>
                   <Icons.Bell />
