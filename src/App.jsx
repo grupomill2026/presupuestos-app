@@ -978,6 +978,36 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Auto backup diario por email (lunes a viernes)
+  const backupSentRef = useRef(false);
+  useEffect(() => {
+    if (backupSentRef.current || presupuestos.length === 0 || useDemoMode) return;
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=domingo, 6=sábado
+    if (dayOfWeek === 0 || dayOfWeek === 6) return; // Solo días hábiles
+    const todayKey = `backup_sent_${now.toISOString().slice(0, 10)}`;
+    if (localStorage.getItem(todayKey)) return; // Ya se envió hoy
+    backupSentRef.current = true;
+    localStorage.setItem(todayKey, "true");
+    // Generar resumen para el email
+    const resumen = presupuestos.map((p) =>
+      `• ${p.cliente} | ${p.area} | ${ESTADO_MAP[p.estado]?.label || p.estado} | $${(p.monto || 0).toLocaleString("es-AR")}`
+    ).join("\n");
+    const totalMonto = presupuestos.reduce((s, p) => s + (p.monto || 0), 0);
+    const activos = presupuestos.filter((p) => p.estado !== "finalizado").length;
+    sendEmailNotification({
+      toEmail: "administracion@grupomill.com",
+      toName: "Administración",
+      subject: `Backup diario - ${now.toLocaleDateString("es-AR")}`,
+      heading: `Backup Diario de Presupuestos`,
+      message: `Resumen del día ${now.toLocaleDateString("es-AR")}:\n\nTotal presupuestos: ${presupuestos.length}\nActivos: ${activos}\nMonto total: $${totalMonto.toLocaleString("es-AR")}\n\n${resumen}\n\nPara descargar el archivo completo, ingresá a PresupuestOS y hacé clic en "Copia de seguridad".`,
+      clientName: `${presupuestos.length} presupuestos`,
+      status: `${activos} activos`,
+      area: `Total: $${totalMonto.toLocaleString("es-AR")}`,
+    });
+    console.log("Backup diario enviado a administracion@grupomill.com");
+  }, [presupuestos]);
+
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   if (!user) {
